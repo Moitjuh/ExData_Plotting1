@@ -1,0 +1,179 @@
+---
+title: "Practical Machine Learning - Prediction Assignment Writeup"
+author: "Annette Spithoven"
+date: "27-10-2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## if you need to: install the package pacman, with this package you can easily load packages 
+## or install them when you do not have them installed yet
+
+#install.packages("pacman")
+library(pacman)
+
+p_load(dplyr, ggplot2, yarrr, caret,corrplot, Amelia, e1071, rattle, randomForest)
+
+
+```
+
+## Introduction
+
+This document is the final report of the Peer Assessment project from Coursera’s course Practical Machine Learning, as part of the Specialization in Data Science. It was built up in RStudio, using its knitr functions, meant to be published in html format. The report describes how the model was build, how cross validation was used, and why choices were made as they were. 
+
+The main goal of the project is to predict the manner in which 6 participants performed some exercise, as described in the “classe” variable (see explanation below).In order to do so, data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants doing some exercises was used.
+
+### Background
+Devices such as Jawbone Up, Nike FuelBand, and Fitbit make it possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+[The training data for this project are available here.](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+[The test data are available here.](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+## Experiment Setup
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: 
+
+* exactly according to the specification (Class A)
+* throwing the elbows to the front (Class B)
+* lifting the dumbbell only halfway (Class C)
+* lowering the dumbbell only halfway (Class D)
+* throwing the hips to the front (Class E). 
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. It was made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg) [^1].
+
+## Getting and Cleaning the Data
+We load the data directly from the site. 
+```{r Get Data}
+
+## Create vector with the URL to the data so that is can be easily loaded 
+url_trian <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url_test <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+## Loading the data while simultanuously Converting all blank(‘“”’), ‘#DIV/0’ and ‘NA’ values to ‘NA’.
+training_data <- read.csv(url(url_trian), na.strings=c("NA","#DIV/0!", ""))
+testing_data  <- read.csv(url(url_test), na.strings=c("NA","#DIV/0!", ""))
+dim(training_data)
+```
+
+The data will be partitioned into a training set (70% of the training data) and a test set (30% of the training data) for cross validation purposes. With the dimensions of the trainings data given below.
+```{r partitioning}
+## Setting seed so that the results are reproducable
+set.seed(12345) 
+
+## Use 70% of the data for training purposes, other data is used as test
+inTrain <- createDataPartition(training_data$classe, p=0.70, list=F)
+train_data <- training_data[inTrain, ]
+test_data <- training_data[-inTrain, ]
+dim(train_data)
+```
+Dimension of the test data
+```{r }
+dim(test_data)
+```
+
+A brief overview of the avialable data (as indicated by their column name). 
+
+```{r colnames}
+colnames(train_data)
+```
+
+To get an idea of what is in the data, and more importantly of how complete the information is, a plot was made with the missings and observed data.
+
+```{r check data completeness training data}
+missmap(train_data, 
+        ## remove y
+        y.labels = NULL, 
+        y.at = NULL, 
+        ## make text smaller
+        x.cex = 0.5, 
+        ## use better colors than default
+        col=c("firebrick", "darkgreen"))
+```
+
+As can be seen in the plot, quite some of the columns have missing data. If a (classification) model was build with these variables, the classification rules cannot be applied on them most of the time. Therefore, building a model based on such variables is not practical. I do not want any variables in the data that have more than 5% missing values.
+
+```{r remove columns with too much missing}
+## The function takes a column as an argument, it checks the NAs in the column (with the is.na), summarises this and devides it by the total number of observations (with the mean).  lapply is used to apply the function to every column. The columns that have less than 5% missing are saved in a "named logical"  
+complete_var <- lapply(train_data, function(x) mean(is.na(x))) <= 0.95
+
+## Using the named logical to select the columns with less than 5% missing
+train_data <- train_data[ , complete_var == TRUE ]
+dim(train_data)
+```
+As some of the variables do not appear to be meaningfull for our model, we will remove them as well.
+
+```{r }
+train_data <- train_data %>% 
+  select(-c(1:5))
+```
+
+Now that the missing data has been removed we will examine the data in somewhat more detail. Lets examine the outcome first.
+
+```{r frequency table outcome}
+ table(train_data$classe)
+```
+
+In order to get an even understanding of the data and the relations between the variables (excluding some non-numeric and the outcome variables), a correlation plot is presented. The darker the color in this plot, the stronger the correlation.
+
+```{r correlation}
+cor_data_train <- cor(train_data[, which(!colnames(train_data) %in% c("classe","new_window"))])
+corrplot(cor_data_train, 
+         order = "FPC",
+         method = "color", 
+         type = "lower", 
+         tl.cex = 0.65, 
+         tl.col = rgb(0, 0, 0))
+```
+
+## Data Modeling
+
+A decision tree and a random forest are used to predict the data. The best model is than selected to predict the test dataset. It is expected that the random forest performs better than the decision tree. 
+
+### Method: Decision Trees
+```{r decision tree}
+set.seed(12345)
+decision_tree <- train(classe ~ ., data=train_data, method="rpart")
+decision_tree
+```
+```{r plot decision tree}
+fancyRpartPlot(decision_tree$finalModel)
+```
+
+```{r predict with decision tree}
+predict_decision_tree <- predict(decision_tree, newdata=test_data)
+conf_Mat_decision_tree <- confusionMatrix(predict_decision_tree, test_data$classe)
+conf_Mat_decision_tree
+```
+
+### Method: Random Forest
+```{r RF model fit}
+set.seed(12345)
+control_RF <- trainControl(method="cv", number=3, verboseIter=FALSE)
+
+RF <-  train(classe ~ ., data = train_data, 
+                 method = "rf", 
+                 prox = TRUE,
+                trControl = control_RF,
+             ntree = 10)
+RF
+```
+
+```{r predict with RF}
+predict_RF <- predict(RF, newdata=test_data)
+conf_Mat_RF <- confusionMatrix(predict_RF, test_data$classe)
+conf_Mat_RF
+```
+## Applying the Best Model to the Test Data. 
+The accuracy of the models was
+* Decision Tree: 0.4895
+* Random Forest: 0.9975          
+
+Therefore, the random forest was used to  predict the 20 quiz results (test dataset) as shown below.
+```{r apply model}
+set.seed(12345)
+predict <- predict(RF, newdata=testing_data)
+predict
+```
+
+## References
+[^1]: Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. DOI: 10.1007/978-3-642-34459-6_6.
